@@ -3,14 +3,17 @@
  * เครือข่าย (ไม่มี preflight · จำกัด 4 คำขอ · ลองซ้ำเฉพาะคำสั่งอ่าน) · แคช SWR · ล็อกอินรอบเดียว · เมนู/เส้นทาง · ชิ้นส่วน UI
  * ⚠ BUILD ต้องตรง 3 ที่: Config.gs · javascript.js (APP_BUILD) · version.json
  */
-var APP_BUILD = '2569-10-05.1', APP_BUILD_TH = '5 ต.ค. 2569', APP_VERSION = '1.2569';
-var S = { token: null, boot: null, me: null, dv: null, route: null, busy: 0 };
+var APP_BUILD = '2569-10-05.2', APP_BUILD_TH = '5 ต.ค. 2569', APP_VERSION = '1.2569';
+var S = { token: null, boot: null, me: null, dv: null, route: null, busy: 0, navId: 0 };
+/** เก็บเวลาตอบสนอง (ดูได้ที่ ตั้งค่าระบบ › ระบบ) */
+var PERF = [];
+function perfLog(action, total, server) { PERF.unshift({ a: action, t: total, s: server || 0, at: new Date().toTimeString().slice(0, 8) }); if (PERF.length > 40) PERF.pop(); }
 
 /* ================================================================ เครือข่าย */
 var NET = { active: 0, queue: [], MAX: 4 };
 function netSlot() { return new Promise(function (res) { if (NET.active < NET.MAX) { NET.active++; res(); } else NET.queue.push(res); }); }
 function netDone() { var n = NET.queue.shift(); if (n) n(); else NET.active = Math.max(0, NET.active - 1); }
-function isRead(a) { return /^(get|list|bootstrap|ping|suggest|preview)/.test(a); }
+function isRead(a) { return /^(get|list|bootstrap|boot|ping|suggest|preview|lookup)/.test(a); }
 function fetchOnce(action, payload) {
   return fetch(API_URL, { method: 'POST', redirect: 'follow', credentials: 'omit', cache: 'no-store',
     body: JSON.stringify({ action: action, token: S.token, payload: payload || {} }) })
@@ -53,15 +56,19 @@ function api(action, payload, opt) {
   }
   if (!read) cacheClear();
   busy(1);
+  var nav = S.navId, t0 = Date.now(), NEVER = new Promise(function () { });
   return rawCall(action, payload).then(function (res) {
     busy(-1);
+    perfLog(action, Date.now() - t0, res.ms);
+    // ผลของคำสั่งอ่านที่กลับมาหลังผู้ใช้เปลี่ยนหน้าไปแล้ว → ไม่ต้องวาด (กัน error "null is not an object")
+    if (read && nav !== S.navId && !opt.keep) return NEVER;
     if (res.dv && S.dv && res.dv !== S.dv) { var keep = MEMO[k]; cacheClear(); if (keep) MEMO[k] = keep; }
     if (res.dv) S.dv = res.dv;
     if (res.ok) { if (read && opt.fresh) { MEMO[k] = res.data; MEMO_T[k] = Date.now(); pcSet(k, res.data); } return res.data; }
     if (res.code === 'UNAUTHORIZED') { sessionEnd('หมดเวลาการใช้งาน กรุณาเข้าสู่ระบบอีกครั้ง'); }
     if (res.code === 'MUST_CHANGE') { showChangePassword(true); }
     var e = new Error(res.error || 'เกิดข้อผิดพลาด'); e.code = res.code; throw e;
-  }, function (e) { busy(-1); throw e; });
+  }, function (e) { busy(-1); if (read && nav !== S.navId && !opt.keep) return NEVER; throw e; });
 }
 function busy(d) { S.busy = Math.max(0, S.busy + d); var b = document.getElementById('netbar'); if (b) b.classList.toggle('on', S.busy > 0); }
 
@@ -186,9 +193,12 @@ function personPicker(host, o) {
   var search = debounce(function () {
     var q = inp.value.trim(); if (q.length < 2) { pop.hidden = true; return; }
     api('suggestPeople', { q: q, edit: !!o.edit }).then(function (list) {
-      if (!list.length) { pop.innerHTML = '<div class="pp-item muted">ไม่พบ</div>'; }
+      var hrOk = /^\d{7}$/.test(q) && can('smartapi') && (can('edit') || can('office'));
+      if (!list.length) { pop.innerHTML = hrOk ? '<button type="button" class="pp-item hr" data-hr>' + ic('cloud') + ' ไม่พบ ' + esc(q) + ' ในทะเบียน — <b>ค้นจากระบบ HR</b></button>' : '<div class="pp-item muted">ไม่พบในทะเบียน' + (/^\d{7}$/.test(q) ? ' (รหัส ' + esc(q) + ')' : '') + '</div>'; }
       else pop.innerHTML = list.map(function (p, i) { return '<button type="button" class="pp-item" data-k="' + i + '"><b>' + esc(p.empCode) + '</b> ' + esc(p.fullName) + ' <span class="muted">' + esc(p.wardCode + ' · ' + p.positionName) + '</span></button>'; }).join('');
       place(); pop.hidden = false;
+      var hb = $('[data-hr]', pop); if (hb) hb.onmousedown = function (e) { e.preventDefault(); pop.hidden = true;
+        hrLookupDialog(q, function (p) { if (o.single) sel = [p]; else sel.push(p); inp.value = ''; draw(); if (o.onChange) o.onChange(sel); }); };
       $$('[data-k]', pop).forEach(function (b) { b.onmousedown = function (e) { e.preventDefault(); var p = list[+b.getAttribute('data-k')];
         if (o.single) sel = [p]; else if (!sel.some(function (x) { return x.empCode === p.empCode; })) sel.push(p);
         inp.value = ''; pop.hidden = true; draw(); if (o.onChange) o.onChange(sel); }; });
@@ -198,6 +208,78 @@ function personPicker(host, o) {
   if (o.value) { sel = o.value.slice(); draw(); }
   var obs = new MutationObserver(function () { if (!document.body.contains(host)) { pop.remove(); obs.disconnect(); } }); obs.observe(document.body, { childList: true, subtree: true });
   return { getValue: function () { return sel; }, clear: function () { sel = []; draw(); } };
+}
+
+/* ================================================================ ระบบ HR (SmartAPI) — ค้น 1 คน / เพิ่มจาก HR / ดึงข้อมูลทั้งหมดพร้อมแถบความคืบหน้า */
+function hrCardHtml(r) {
+  if (!r.ok) return '<div class="alert ' + (r.notFound ? 'warn' : 'err') + '">' + esc(r.error) + (r.ms ? ' <span class="muted small">(' + r.ms + ' ms)</span>' : '') + '</div>';
+  var x = r.row;
+  return '<div class="hr-card"><div class="hr-av">' + ic('user') + '</div><div class="hr-b"><b>' + esc(x.fullName) + '</b> <span class="mono muted">' + esc(x.empCode) + '</span>' +
+    '<div class="muted small">' + esc(x.hrPosition || '-') + ' · ' + esc(x.hrOrgUnit || '-') + '</div>' +
+    '<div class="small">เริ่มงาน ' + (x.startDate ? td(x.startDate) : '-') + ' · หอในระบบ: ' + (x.wardCode ? '<b>' + esc(x.wardCode + ' ' + x.wardName) + '</b>' : '<span class="warn-t">ยังเทียบไม่ได้ — โปรดเลือก</span>') + '</div>' +
+    (r.exists ? '<div class="chip ok">มีในทะเบียนแล้ว</div>' : '') + '</div><span class="muted small">' + r.ms + ' ms</span></div>';
+}
+function hrLookupDialog(code, onAdded) {
+  var last = null;
+  var m = modal({ title: 'ค้นข้อมูลจากระบบ HR (SmartAPI)', body: '<form id="hrf" class="row-a"><input id="hrc" class="in" inputmode="numeric" maxlength="7" placeholder="รหัสพนักงาน 7 หลัก" value="' + attr(code || '') + '"><button class="btn" type="submit">' + ic('search') + ' ค้นหา</button></form><div id="hrr" class="mt"></div>',
+    actions: [{ label: 'เพิ่มเข้าทะเบียน', kind: 'primary', onClick: function (close, box) {
+      if (!last || !last.ok) { toast('กรุณาค้นหารหัสที่พบในระบบ HR ก่อน', 'err'); return; }
+      if (last.exists) { close(); if (onAdded) onAdded(last.row); else go('person/' + last.row.empCode); return; }
+      var w = $('#hrw', box) ? $('#hrw', box).value : last.row.wardCode, pc = $('#hrp', box) ? $('#hrp', box).value : last.row.positionCode;
+      if (!w) { toast('กรุณาเลือกหอ/หน่วยงาน', 'err'); return; } if (!pc) { toast('กรุณาเลือกตำแหน่ง', 'err'); return; }
+      return api('addFromHr', { empCode: last.row.empCode, wardCode: w, positionCode: pc }).then(function () {
+        close(); cacheClear(); toast('เพิ่ม ' + last.row.fullName + ' เข้าทะเบียนแล้ว');
+        var pos = (S.boot.positions.filter(function (q) { return q.code === pc; })[0] || {}).name || '';
+        if (onAdded) onAdded({ empCode: last.row.empCode, fullName: last.row.fullName, wardCode: w, positionName: pos }); else go('person/' + last.row.empCode);
+      });
+    } }] });
+  var box = m.box, run = function () {
+    var c = $('#hrc', box).value.trim(); if (!/^\d{7}$/.test(c)) { toast('รหัสพนักงานต้องเป็นตัวเลข 7 หลัก', 'err'); return; }
+    $('#hrr', box).innerHTML = '<div class="loading-line">' + ic('cloud') + ' กำลังถามระบบ HR…</div>';
+    api('lookupHr', { code: c }, { keep: true }).then(function (r) {
+      last = r; var x = r.row || {};
+      $('#hrr', box).innerHTML = hrCardHtml(r) + (r.ok && !r.exists ? '<div class="form-grid mt">' +
+        (!x.wardCode || !x.canAdd ? '<label class="fld"><span>หอ/หน่วยงาน *</span><select id="hrw">' + wardOpts(x.wardCode || '', 'เลือกหอ/หน่วย', S.boot.editWards) + '</select></label>' : '') +
+        (!x.positionCode ? '<label class="fld"><span>ตำแหน่ง *</span><select id="hrp">' + posOpts('', 'เลือกตำแหน่ง') + '</select></label>' : '') + '</div>' : '');
+    }).catch(function (e) { last = null; $('#hrr', box).innerHTML = '<div class="alert err">' + esc(e.message) + '</div>'; });
+  };
+  $('#hrf', box).onsubmit = function (e) { e.preventDefault(); run(); };
+  if (code) run();
+}
+/** ดึง/ตรวจข้อมูลทุกคนกับ HR ทีละ 200 คน พร้อมแถบความคืบหน้า (เรียก syncApi ซ้ำตาม offset) */
+function hrSyncAll(onDone) {
+  var stop = false, tot = { checked: 0, found: 0, flagged: 0, filledStart: 0 };
+  var m = modal({ title: 'ดึงข้อมูลจากระบบ HR ทั้งหมด', sticky: true, cancel: 'หยุด / ปิด', body: '<p class="muted">ระบบเติมวันเริ่มงาน ตำแหน่งตาม HR และหน่วยงาน และติดธงคนที่ไม่พบใน HR (ไม่เปลี่ยนสถานะเองถ้าไม่ได้ตั้งค่าไว้) — ทำทีละ 200 คน ปิดหน้าต่างนี้ได้ ข้อมูลที่ทำแล้วไม่หาย</p>' +
+    '<div class="progress"><span id="sbar" style="width:0%"></span></div><p id="stxt" class="small">กำลังเริ่ม…</p><ul class="steps-log" id="slog"></ul>' });
+  var box = m.box, wrap = box.parentNode, t0 = Date.now();
+  new MutationObserver(function () { if (!document.body.contains(wrap)) stop = true; }).observe(document.body, { childList: true });
+  var step = function (off) {
+    if (stop) return;
+    api('adminAction', { act: 'syncApi', offset: off, limit: 200 }, { keep: true }).then(function (r) {
+      ['checked', 'found', 'flagged', 'filledStart'].forEach(function (k) { tot[k] += r[k] || 0; });
+      var done = r.next == null ? r.total : r.next, pct = r.total ? Math.round(done / r.total * 100) : 100;
+      $('#sbar', box).style.width = pct + '%';
+      $('#stxt', box).innerHTML = '<b>' + num(done, 0) + ' / ' + num(r.total, 0) + '</b> คน (' + pct + '%) · พบใน HR ' + num(tot.found, 0) + ' · เติมวันเริ่มงาน ' + num(tot.filledStart, 0) + ' · ติดธง ' + num(tot.flagged, 0) + ' · ' + Math.round((Date.now() - t0) / 1000) + ' วินาที';
+      $('#slog', box).insertAdjacentHTML('afterbegin', '<li>' + ic('check', 'ok-t') + ' ลำดับ ' + (off + 1) + '–' + done + ' · พบ ' + (r.found || 0) + ' · ติดธง ' + (r.flagged || 0) + '</li>');
+      if (r.next != null) step(r.next);
+      else { cacheClear(); $('#stxt', box).insertAdjacentHTML('beforeend', '<div class="alert ok mt">เสร็จเรียบร้อย</div>'); toast('ดึงข้อมูลจาก HR เสร็จ: ' + num(tot.found, 0) + ' คน'); if (onDone) onDone(tot); }
+    }).catch(function (e) { $('#stxt', box).insertAdjacentHTML('beforeend', '<div class="alert err mt">หยุดที่ลำดับ ' + (off + 1) + ': ' + esc(e.message) + ' <button class="btn sm" id="sretry">ลองต่อ</button></div>'); var b = $('#sretry', box); if (b) b.onclick = function () { b.parentNode.remove(); step(off); }; });
+  };
+  step(0);
+}
+/** ทดสอบ SmartAPI ทีละขั้น (token → emp-info) แสดงผล ok/รายละเอียด/เวลา */
+function hrTestDialog() {
+  var m = modal({ title: 'ทดสอบการเชื่อมต่อ SmartAPI', wide: true, body: '<form id="tf" class="row-a"><input id="tc" class="in" inputmode="numeric" maxlength="7" placeholder="รหัสพนักงานที่ยังทำงาน (ค่าเริ่มต้น = รหัสของคุณ)" value="' + attr(S.me.empCode) + '"><button class="btn primary" type="submit">' + ic('zap') + ' ทดสอบ</button></form><div id="tr" class="mt"></div>' });
+  var box = m.box;
+  $('#tf', box).onsubmit = function (e) { e.preventDefault();
+    $('#tr', box).innerHTML = '<div class="loading-line">กำลังทดสอบ…</div>';
+    api('adminAction', { act: 'testApi', code: $('#tc', box).value.trim() }, { keep: true }).then(function (r) {
+      $('#tr', box).innerHTML = '<div class="kvs">' + kv('ที่อยู่ API', '<span class="mono small">' + esc(r.base + r.pathEmp) + '</span>') + kv('SMARTAPI_USER', r.hasUser ? '<span class="ok-t">มีแล้ว</span>' : '<span class="err-t">ยังไม่มีใน Script Properties</span>') +
+        kv('SMARTAPI_PASS', r.hasPass ? '<span class="ok-t">มีแล้ว</span>' : '<span class="err-t">ยังไม่มีใน Script Properties</span>') + kv('เปิดใช้ในค่าระบบ', r.enabled ? '<span class="ok-t">เปิด</span>' : '<span class="err-t">ปิด — เปิดที่ ค่าระบบ</span>') + '</div>' +
+        '<ul class="steps-log big">' + r.steps.map(function (x) { return '<li class="' + (x.ok ? 'ok' : 'bad') + '">' + ic(x.ok ? 'check' : 'alert', x.ok ? 'ok-t' : 'err-t') + ' <b>' + esc(x.step) + '</b> <span class="muted small">' + x.ms + ' ms</span><div class="small mono wrap">' + esc(x.detail) + '</div></li>'; }).join('') + '</ul>';
+    }).catch(function (e) { $('#tr', box).innerHTML = '<div class="alert err">' + esc(e.message) + '</div>'; });
+  };
+  $('#tf', box).onsubmit(new Event('submit'));
 }
 
 /* ================================================================ กราฟแท่งเรียบง่าย (SVG/CSS ไม่ใช้ไลบรารี) */
@@ -261,17 +343,45 @@ function showChangePassword(forced) {
 function sessionEnd(msg) { S.token = null; S.boot = null; cacheClear(); try { localStorage.removeItem('hn_token'); } catch (e) { } $$('.modal-wrap').forEach(function (m) { m.remove(); }); showLogin(msg); }
 function logout() { if (S.token) api('logout', {}).catch(function () { }); sessionEnd(''); }
 
+
+/* ================================================================ ไอคอนเส้น (SVG ในตัว ไม่โหลดภายนอก) */
+var ICP = {
+  home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/><path d="M18 14c2.2.6 3.5 2.8 3.5 6"/>',
+  book: '<path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 19.5V4.5"/><path d="M8 7h8M8 11h6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  inbox: '<path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5.5 5h13L21 13v6H3v-6z"/>',
+  printer: '<path d="M7 8V3h10v5"/><rect x="3" y="8" width="18" height="9" rx="2"/><path d="M7 14h10v7H7z"/>',
+  upload: '<path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v4h16v-4"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  star: '<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+  alert: '<path d="M12 3 2 20h20z"/><path d="M12 9v5M12 17h.01"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  id: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M6 16c.5-1.5 1.7-2 3-2s2.5.5 3 2M14 10h4M14 13h3"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  download: '<path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>',
+  logout: '<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>',
+  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  cloud: '<path d="M7 18a5 5 0 1 1 1-9.9A6 6 0 0 1 19.5 10 4 4 0 0 1 18 18z"/>',
+  check: '<path d="m5 12 5 5 9-10"/>',
+  zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>'
+};
+function ic(name, cls) { return '<svg class="ic' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICP[name] || '') + '</svg>'; }
+
 /* ================================================================ เริ่มระบบ / เมนู */
 var ROUTES = {};
 function route(name, fn) { ROUTES[name] = fn; }
 function navItems() {
-  var b = S.boot, it = [{ k: 'home', l: 'หน้าแรก', ic: '⌂' }];
-  if (b.me.hasProfile) it.push({ k: 'me', l: 'ข้อมูลของฉัน', ic: '☺' });
-  if (b.can.staff) it.push({ k: 'people', l: 'บุคลากร', ic: '☷' }, { k: 'training', l: 'การอบรม', ic: '✎' }, { k: 'attendance', l: 'ขาด ลา มาสาย', ic: '◷' });
-  it.push({ k: 'requests', l: 'คำขอแก้ไข', ic: '✉', badge: b.pending || 0 });
-  if (b.can.staff) it.push({ k: 'reports', l: 'รายงานและพิมพ์', ic: '⎙' });
-  if (b.can.edit) it.push({ k: 'import', l: 'นำเข้าข้อมูล', ic: '⇪' });
-  if (b.can.office) it.push({ k: 'admin', l: 'ตั้งค่าระบบ', ic: '⚙' });
+  var b = S.boot, it = [{ k: 'home', l: 'ภาพรวม', ic: 'home' }];
+  if (b.me.hasProfile) it.push({ k: 'me', l: 'ข้อมูลของฉัน', ic: 'user' });
+  if (b.can.staff) it.push({ sec: 'บุคลากร' }, { k: 'people', l: 'ทะเบียนบุคลากร', ic: 'users' }, { k: 'training', l: 'การอบรม', ic: 'book' }, { k: 'attendance', l: 'ขาด ลา มาสาย', ic: 'clock' });
+  it.push({ k: 'requests', l: 'คำขอแก้ไข', ic: 'inbox', badge: b.pending || 0 });
+  if (b.can.staff || b.can.edit || b.can.office) it.push({ sec: 'เครื่องมือ' });
+  if (b.can.staff) it.push({ k: 'reports', l: 'รายงานและพิมพ์', ic: 'printer' });
+  if (b.can.edit) it.push({ k: 'import', l: 'นำเข้าข้อมูล', ic: 'upload' });
+  if (b.can.office) it.push({ k: 'admin', l: 'ตั้งค่าระบบ', ic: 'settings' });
   return it;
 }
 function startApp(boot, home) {
@@ -280,7 +390,7 @@ function startApp(boot, home) {
   if (home) { var k = mkey('getDashboard', {}); MEMO[k] = home; MEMO_T[k] = Date.now(); pcSet(k, home); }
   document.body.className = '';
   $('#app').innerHTML =
-    '<header class="top"><button class="icon-btn menu-btn" id="menuBtn" aria-label="เมนู">☰</button>' +
+    '<header class="top"><button class="icon-btn menu-btn" id="menuBtn" aria-label="เมนู">' + ic('menu') + '</button>' +
     '<a class="brand" href="#/home"><span class="nso-mark sm">NSO</span><span class="brand-t"><b>HRMi for NSO</b><small>ฝ่ายการพยาบาล</small></span></a><span class="sp"></span>' +
     '<button class="user-btn" id="userBtn" aria-haspopup="true"><span class="avatar">' + esc((S.me.fullName.replace(/^(นาย|นางสาว|นาง)\s*/, '') || '?').charAt(0)) + '</span><span class="user-t"><b>' + esc(S.me.fullName) + '</b><small>' + esc(S.me.roleNames.filter(function (x, i) { return i > 0 || S.me.roles.length === 1; }).join(' · ')) + '</small></span></button></header>' +
     '<div id="netbar" class="netbar"></div><div class="shell"><nav class="side" id="side" aria-label="เมนูหลัก"></nav><main id="view" tabindex="-1"></main></div><div class="scrim" id="scrim"></div>';
@@ -295,7 +405,8 @@ function startApp(boot, home) {
 function drawNav() {
   var cur = (S.route || {}).name;
   $('#side').innerHTML = navItems().map(function (n) {
-    return '<a href="#/' + n.k + '" class="nav' + (cur === n.k || (cur === 'person' && n.k === 'people') ? ' on' : '') + '"><span class="nav-ic" aria-hidden="true">' + n.ic + '</span><span>' + esc(n.l) + '</span>' + (n.badge ? '<span class="badge">' + n.badge + '</span>' : '') + '</a>';
+    if (n.sec) return '<div class="nav-sec">' + esc(n.sec) + '</div>';
+    return '<a href="#/' + n.k + '" class="nav' + (cur === n.k || (cur === 'person' && n.k === 'people') ? ' on' : '') + '">' + ic(n.ic, 'nav-ic') + '<span>' + esc(n.l) + '</span>' + (n.badge ? '<span class="badge">' + n.badge + '</span>' : '') + '</a>';
   }).join('') + '<div class="side-foot muted small">' + esc(S.boot.app.org) + '<br>v' + APP_VERSION + ' · ' + APP_BUILD_TH + '</div>';
 }
 function userMenu() {
@@ -312,7 +423,7 @@ function parseHash() {
 }
 function render() {
   if (!S.boot) return;
-  var r = parseHash(); S.route = r; drawNav(); document.body.classList.remove('nav-open');
+  var r = parseHash(); S.route = r; S.navId++; drawNav(); document.body.classList.remove('nav-open');
   var fn = ROUTES[r.name] || ROUTES.home, v = $('#view');
   v.innerHTML = skeleton(5); window.scrollTo(0, 0);
   try { fn(v, r); } catch (e) { fail(e); v.innerHTML = empty('เปิดหน้านี้ไม่ได้', esc(e.message)); }
@@ -339,5 +450,5 @@ document.addEventListener('DOMContentLoaded', function () {
   if (!tok) { showLogin(''); return; }
   S.token = tok;
   $('#app').innerHTML = '<div class="boot"><span class="nso-mark">NSO</span><p>กำลังเปิดระบบ…</p><div class="login-bar on"><span></span></div></div>';
-  api('bootstrap', {}).then(function (b) { startApp(b, null); }).catch(function (e) { if (e.code !== 'UNAUTHORIZED') showLogin(e.code === 'MUST_CHANGE' ? '' : e.message); });
+  api('boot', {}, { keep: true }).then(function (b) { startApp(b.boot, b.home); }).catch(function (e) { if (e.code !== 'UNAUTHORIZED') showLogin(e.code === 'MUST_CHANGE' ? '' : e.message); });
 });

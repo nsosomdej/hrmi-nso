@@ -5,7 +5,7 @@
 function readSheet(file) {
   return XlsxRead.read(file).then(function (wb) {
     var name = wb.order.filter(function (n) { return /ข้อมูล|data/i.test(n); })[0] || wb.order[0], rows = wb.sheets[name] || [], hi = -1;
-    for (var i = 0; i < Math.min(rows.length, 15); i++) if ((rows[i] || []).some(function (c) { return /รหัสพนักงาน|^รหัส$/.test(String(c).replace(/\*/g, '').trim()); })) { hi = i; break; }
+    for (var i = 0; i < Math.min(rows.length, 15); i++) if ((rows[i] || []).some(function (c) { return /^(รหัสพนักงาน|รหัส|empcode)$/i.test(String(c).replace(/\*/g, '').trim()); })) { hi = i; break; }
     if (hi < 0) throw new Error('ไม่พบแถวหัวคอลัมน์ "รหัสพนักงาน" ในชีท ' + name + ' — กรุณาใช้ไฟล์แม่แบบ');
     var head = rows[hi].map(function (h) { return String(h).trim(); });
     var data = rows.slice(hi + 1).filter(function (r) { return r && r.some(function (c) { return String(c).trim() !== ''; }); });
@@ -57,7 +57,9 @@ route('import', function (v, r) {
         askPassword('ยืนยันการนำเข้า', 'นำเข้า ' + p.okCount + ' แถว จากไฟล์ ' + fileName).then(function (pw) {
           return api('commitImport', Object.assign({ kind: kind, header: parsed.header, data: parsed.data, file: fileName, password: pw, skipErrors: skip }, extra())).then(function (res) {
             cacheClear(); toast('นำเข้าแล้ว ' + res.imported + ' รายการ' + (res.skipped ? ' · ข้าม ' + res.skipped + ' แถว' : ''));
-            $('#imr').innerHTML = '<div class="alert ok">นำเข้าเรียบร้อย ' + res.imported + ' รายการ' + (res.skipped ? ' · ข้ามแถวผิดพลาด ' + res.skipped + ' แถว' : '') + '</div>';
+            $('#imr').innerHTML = '<div class="alert ok">นำเข้าเรียบร้อย ' + res.imported + ' รายการ' + (res.skipped ? ' · ข้ามแถวผิดพลาด ' + res.skipped + ' แถว' : '') + '</div>' +
+              (kind === 'PERSON' && can('smartapi') && can('office') ? '<div class="hero-card mt"><div><b>ขั้นต่อไป: ดึงข้อมูลจากระบบ HR</b><p class="muted small">เติมชื่อ ตำแหน่งตาม HR หน่วยงาน และวันเริ่มงานให้ทุกคนอัตโนมัติ (ประมาณ 1–3 นาทีสำหรับ 1,000 คน)</p></div><button class="btn primary" id="goSync">' + ic('cloud') + ' ดึงข้อมูลจาก HR ตอนนี้</button></div>' : '');
+            if ($('#goSync')) $('#goSync').onclick = function () { hrSyncAll(); };
           });
         }).catch(fail);
       };
@@ -177,6 +179,11 @@ function admAudit(host, q) {
     $('#auf [name=q]').addEventListener('input', debounce(function () { go('admin', Object.assign({ tab: 'audit' }, formData($('#auf')))); }, 500));
   }).catch(function (e) { host.innerHTML = empty(e.message); });
 }
+function perfTable() {
+  if (!PERF.length) return '<p class="muted">ยังไม่มีข้อมูล</p>';
+  return '<div class="tbl-wrap"><table class="tbl compact"><thead><tr><th>เวลา</th><th>คำสั่ง</th><th class="r">รวม (ms)</th><th class="r">หลังบ้าน (ms)</th><th class="r">เครือข่าย (ms)</th></tr></thead><tbody>' +
+    PERF.slice(0, 20).map(function (x) { return '<tr><td class="small">' + x.at + '</td><td class="mono">' + esc(x.a) + '</td><td class="r' + (x.t > 4000 ? ' err-t' : x.t > 2000 ? ' warn-t' : '') + '">' + num(x.t, 0) + '</td><td class="r">' + num(x.s, 0) + '</td><td class="r">' + num(Math.max(0, x.t - x.s), 0) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+}
 function admSystem(host) {
   api('getSystemInfo', {}).then(function (d) {
     host.innerHTML = '<div class="kvs">' + kv('ระบบ', esc(d.app.NAME + ' v' + d.app.VERSION)) + kv('หลังบ้าน build', esc(d.app.BUILD + ' (' + d.app.BUILD_TH + ')')) + kv('หน้าเว็บ build', esc(APP_BUILD)) +
@@ -184,12 +191,16 @@ function admSystem(host) {
       (d.dbUrl ? kv('ไฟล์ฐานข้อมูล', '<a href="' + attr(d.dbUrl) + '" target="_blank" rel="noopener">เปิด Google Sheet</a> <span class="muted small">(ห้ามแชร์)</span>') : '') + '</div>' +
       '<h3>จำนวนข้อมูล</h3><div class="kvs">' + Object.keys(d.counts).map(function (k) { return kv(k, num(d.counts[k], 0)); }).join('') + kv('ไฟล์ขาด/ลา/สาย (เดือน)', d.store.attendance.length) + kv('ไฟล์อบรม (ปี)', d.store.training.length) + kv('รอบ Competency', esc(d.store.competency.join(', ') || '-')) + '</div>' +
       '<h3>สำรองและกู้คืน</h3><p class="muted small">ระบบสำรองอัตโนมัติทุกคืน 01:00 (เก็บตามจำนวนวันที่ตั้งไว้) · ก่อนกู้คืนระบบสำรองสภาพปัจจุบันให้อีกชุดเสมอ · การกู้คืนไม่แตะบัญชีผู้ใช้</p>' +
-      '<div class="row-a"><button class="btn primary" data-act="backup">สำรองข้อมูลตอนนี้</button>' + (can('admin') ? '<button class="btn" data-act="syncApi">ซิงก์ SmartAPI ตอนนี้</button><button class="btn" data-act="testApi">ทดสอบ SmartAPI</button><button class="btn" data-act="rebuildAtt">คำนวณสรุปขาด/ลา/สายใหม่</button><button class="btn ghost" data-act="clearCache">ล้างแคช</button>' : '') + '</div>' +
+      '<div class="row-a"><button class="btn primary" data-act="backup">สำรองข้อมูลตอนนี้</button>' + (can('admin') ? '<button class="btn" id="hrSync">' + ic('cloud') + ' ดึงข้อมูลจาก HR ทั้งหมด</button><button class="btn" id="hrTest">' + ic('zap') + ' ทดสอบ SmartAPI</button><button class="btn" data-act="rebuildAtt">คำนวณสรุปขาด/ลา/สายใหม่</button><button class="btn ghost" data-act="clearCache">ล้างแคช</button>' : '') + '</div>' +
       (d.store.backup.length ? '<ul class="list">' + d.store.backup.map(function (b) { return '<li><span class="mono">' + esc(b) + '</span>' + (can('admin') ? ' <button class="btn sm ghost danger-t" data-restore="' + attr(b) + '">กู้คืน</button>' : '') + '</li>'; }).join('') + '</ul>' : '<p class="muted">ยังไม่มีไฟล์สำรอง</p>') +
+      '<h3>ความเร็วการตอบสนอง (ล่าสุดในแท็บนี้)</h3><div id="perfT"></div>' +
       '<h3>ประวัติการนำเข้า</h3>' + (d.imports.length ? '<div class="tbl-wrap"><table class="tbl compact"><thead><tr><th>เวลา</th><th>ผู้นำเข้า</th><th>ชนิด</th><th>ไฟล์</th><th class="r">แถว</th><th class="r">สำเร็จ</th><th class="r">ผิดพลาด</th></tr></thead><tbody>' +
         d.imports.map(function (x) { return '<tr><td class="small">' + esc(x.at.replace('T', ' ')) + '</td><td class="mono">' + esc(x.by) + '</td><td>' + esc(x.kind) + '</td><td class="small">' + esc(x.file) + '</td><td class="r">' + x.rows + '</td><td class="r">' + x.ok + '</td><td class="r">' + x.errors + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="muted">ยังไม่มี</p>');
+    if ($('#hrSync', host)) $('#hrSync', host).onclick = function () { if (!d.smartapi.enabled) { toast('ยังไม่ได้เปิดใช้ SmartAPI — เปิดที่แท็บ ค่าระบบ', 'err'); return; } hrSyncAll(); };
+    if ($('#hrTest', host)) $('#hrTest', host).onclick = hrTestDialog;
+    $('#perfT', host).innerHTML = perfTable();
     $$('[data-act]', host).forEach(function (b) { b.onclick = function () { var a = b.getAttribute('data-act'); b.disabled = true;
-      api('adminAction', { act: a }).then(function (r) { b.disabled = false; toast(a === 'backup' ? 'สำรองแล้ว: ' + r.name : a === 'testApi' ? 'SmartAPI: token ' + (r.tokenOk ? '✓' : '✗') + ' · พบข้อมูลทดสอบ ' + (r.found ? '✓' : '✗') + ' · ' + r.ms + ' ms' : a === 'syncApi' ? 'ตรวจ ' + r.checked + ' คน · ติดธง ' + r.flagged : 'เรียบร้อย'); if (a === 'backup') render(); })
+      api('adminAction', { act: a }).then(function (r) { b.disabled = false; toast(a === 'backup' ? 'สำรองแล้ว: ' + r.name : 'เรียบร้อย'); if (a === 'backup') render(); })
         .catch(function (e) { b.disabled = false; fail(e); }); }; });
     $$('[data-restore]', host).forEach(function (b) { b.onclick = function () { var n = b.getAttribute('data-restore');
       askPassword('กู้คืนข้อมูลจาก ' + n, 'ข้อมูลปัจจุบันทั้งหมด (ยกเว้นบัญชีผู้ใช้) จะถูกแทนที่ด้วยไฟล์สำรองนี้ — ระบบสำรองสภาพปัจจุบันไว้ก่อน').then(function (pw) { return api('adminAction', { act: 'restore', name: n, password: pw }); }).then(function () { toast('กู้คืนแล้ว'); cacheClear(); render(); }).catch(fail); }; });

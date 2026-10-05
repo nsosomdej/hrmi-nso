@@ -9,7 +9,7 @@ route('people', function (v, r) {
   if (f.status == null) f.status = 'ACTIVE';
   var flags = [['alert', '★ เกินเกณฑ์'], ['noStep', 'ยังไม่ระบุขั้น'], ['mismatch', 'ข้อสังเกต Level–ขั้น'], ['license', 'ใบประกอบฯ ใกล้หมดอายุ']];
   v.innerHTML = pageHead('บุคลากร', 'ค้นหาจากรหัส ชื่อ หอ หรือตำแหน่ง · ข้อมูลตามขอบเขตสิทธิ์ของคุณ',
-    (can('edit') ? '<button class="btn primary" id="addP">+ เพิ่มบุคลากร</button>' : '') + (can('edit') && can('smartapi') ? '<button class="btn" id="addApi">เพิ่มจากรหัส (SmartAPI)</button>' : '') +
+    (can('edit') ? '<button class="btn primary" id="addP">+ เพิ่มบุคลากร</button>' : '') + (can('edit') && can('smartapi') ? '<button class="btn" id="addHr">' + ic('cloud') + ' ค้น/เพิ่มจาก HR</button><button class="btn ghost" id="addApi">เพิ่มหลายรหัส</button>' : '') +
     '<a class="btn" href="#/reports' + qs(Object.assign({ type: 'PERSONNEL' }, f, { page: '', size: '', sort: '' })) + '">⎙ พิมพ์ / ส่งออก</a>') +
     '<form class="filters" id="pf"><label class="fld grow"><span>ค้นหา</span><input type="search" name="q" value="' + attr(f.q || '') + '" placeholder="รหัส 7 หลัก หรือชื่อ-สกุล"></label>' + scopeFilters(f) +
     '<label class="fld sm"><span>ตำแหน่ง</span><select name="position">' + posOpts(f.position || '', 'ทั้งหมด') + '</select></label>' +
@@ -24,6 +24,7 @@ route('people', function (v, r) {
   $('#pf').onsubmit = function (e) { e.preventDefault(); apply(); };
   if ($('#addP')) $('#addP').onclick = function () { personForm(null); };
   if ($('#addApi')) $('#addApi').onclick = addByCodesDialog;
+  if ($('#addHr')) $('#addHr').onclick = function () { hrLookupDialog(''); };
   var payload = Object.assign({}, f, { alert: !!f.alert, noStep: !!f.noStep, mismatch: !!f.mismatch, license: !!f.license, page: +f.page || 1, size: +f.size || 20 });
   var draw = function (d) {
     var sortH = function (k, l) { var cur = f.sort || 'empCode', on = cur.replace('-', '') === k; return '<th><button class="th-sort' + (on ? ' on' : '') + '" data-sort="' + (on && cur.charAt(0) !== '-' ? '-' + k : k) + '">' + l + (on ? (cur.charAt(0) === '-' ? ' ▾' : ' ▴') : '') + '</button></th>'; };
@@ -158,7 +159,7 @@ function personForm(d) {
   var isNew = !d, p = d ? d.p : {}, raw = d ? d.raw : {}, ew = S.boot.editWards;
   var body = '<form id="pfm" class="form-grid" novalidate>' +
     '<h4 class="fg-h">A. ข้อมูลประจำตัว</h4>' +
-    '<label class="fld"><span>รหัสพนักงาน (7 หลัก) *</span><input name="empCode" inputmode="numeric" maxlength="7" value="' + attr(p.empCode || '') + '"' + (isNew ? '' : ' readonly') + '></label>' +
+    '<label class="fld"><span>รหัสพนักงาน (7 หลัก) *</span>' + (isNew && can('smartapi') ? '<span class="in-btn"><input name="empCode" inputmode="numeric" maxlength="7" value=""><button type="button" class="btn sm" id="pfHr">' + ic('cloud') + ' ดึงจาก HR</button></span><small class="muted" id="pfHrMsg">ใส่รหัสแล้วกด "ดึงจาก HR" ระบบเติมชื่อ ตำแหน่ง หอ วันเริ่มงานให้</small>' : '<input name="empCode" inputmode="numeric" maxlength="7" value="' + attr(p.empCode || '') + '"' + (isNew ? '' : ' readonly') + '>') + '</label>' +
     '<label class="fld"><span>คำนำหน้า</span><select name="title">' + opts(S.boot.lists.titles, p.title || '', 'เลือก') + '</select></label>' +
     '<label class="fld"><span>ชื่อ *</span><input name="firstName" value="' + attr(p.firstName || '') + '"></label>' +
     '<label class="fld"><span>นามสกุล *</span><input name="lastName" value="' + attr(p.lastName || '') + '"></label>' +
@@ -199,6 +200,19 @@ function personForm(d) {
         $('#stOut', box).innerHTML = si.error ? '<span class="err-t">' + esc(si.error) + '</span>' : 'ได้รับขั้น ' + x.stepCode + ' มาแล้ว <b>' + si.years + ' ปี</b> ' + (si.alert ? '<span class="star">★</span> เกินเกณฑ์ ' + S.boot.settings.thresholds[x.stepCode] + ' ปี' : '<span class="ok-t">ปกติ</span>') + (mm ? '<div class="note-i small">ⓘ ' + esc(mm) + '</div>' : '');
       };
       $$('input,select', f).forEach(function (el) { el.addEventListener('input', calc); el.addEventListener('change', calc); }); calc();
+      var hb = $('#pfHr', box); if (hb) hb.onclick = function () {
+        var c = f.empCode.value.trim(), msg = $('#pfHrMsg', box); if (!/^\d{7}$/.test(c)) { toast('รหัสพนักงานต้องเป็นตัวเลข 7 หลัก', 'err'); return; }
+        hb.disabled = true; msg.textContent = 'กำลังถามระบบ HR…';
+        api('lookupHr', { code: c }, { keep: true }).then(function (r) {
+          hb.disabled = false;
+          if (!r.ok) { msg.innerHTML = '<span class="err-t">' + esc(r.error) + '</span>'; return; }
+          if (r.exists) { msg.innerHTML = '<span class="warn-t">มีบุคลากรรหัสนี้ในทะเบียนแล้ว</span> <a href="#/person/' + c + '">เปิดดู ›</a>'; return; }
+          var x = r.row, set = function (n, v) { if (v && f[n]) f[n].value = v; };
+          set('title', x.title); set('firstName', x.firstName); set('lastName', x.lastName); set('startDate', x.startDate); set('positionCode', x.positionCode);
+          if (x.wardCode && f.wardCode && $('option[value="' + x.wardCode + '"]', f.wardCode)) f.wardCode.value = x.wardCode;
+          calc(); msg.innerHTML = '<span class="ok-t">✓ ได้ข้อมูลจาก HR</span> · ' + esc(x.hrPosition + ' · ' + x.hrOrgUnit) + (x.wardCode ? '' : ' — <b>โปรดเลือกหอ</b>');
+        }).catch(function (e) { hb.disabled = false; msg.innerHTML = '<span class="err-t">' + esc(e.message) + '</span>'; });
+      };
     },
     actions: [{ label: 'บันทึก', kind: 'primary', onClick: function (close, box) {
       var x = formData($('#pfm', box)); x.isNew = isNew;
