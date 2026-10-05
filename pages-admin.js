@@ -45,12 +45,19 @@ route('import', function (v, r) {
       $('#imr').innerHTML = '<div class="imp-sum"><div class="kpi"><span class="kpi-l">แถวในไฟล์</span><span class="kpi-v">' + p.total + '</span></div><div class="kpi ok"><span class="kpi-l">ผ่านการตรวจ</span><span class="kpi-v">' + p.okCount + '</span></div>' +
         '<div class="kpi ' + (p.errorCount ? 'alert' : '') + '"><span class="kpi-l">ผิดพลาด</span><span class="kpi-v">' + p.errorCount + '</span></div>' + (kind === 'PERSON' ? '<div class="kpi"><span class="kpi-l">บุคลากรใหม่</span><span class="kpi-v">' + p.news + '</span></div>' : '') + '</div>' +
         (p.warns.length ? '<div class="alert warn">' + p.warns.map(function (w) { return esc(w.msg); }).join('<br>') + '</div>' : '') +
+        hrMapPanel(p.hrUnmatched || []) +
         (p.errorCount ? '<h3>แถวที่ต้องแก้ไข</h3><div class="tbl-wrap"><table class="tbl compact"><thead><tr><th>แถวที่</th><th>รหัส</th><th>ปัญหา</th></tr></thead><tbody>' + p.errors.map(function (e) { return '<tr><td>' + e.row + '</td><td class="mono">' + esc(e.empCode) + '</td><td class="err-t">' + esc(e.msg) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '') +
         (p.sample.length ? '<h3>ตัวอย่างข้อมูลที่จะนำเข้า</h3><div class="tbl-wrap"><table class="tbl compact"><thead><tr>' + Object.keys(p.sample[0]).filter(function (k) { return k.charAt(0) !== '_'; }).map(function (k) { return '<th>' + esc(k) + '</th>'; }).join('') + '</tr></thead><tbody>' +
           p.sample.map(function (s) { return '<tr>' + Object.keys(p.sample[0]).filter(function (k) { return k.charAt(0) !== '_'; }).map(function (k) { return '<td>' + esc(s[k]) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>' : '') +
         '<div class="row-a">' + (p.errorCount && p.okCount ? '<label class="tog"><input type="checkbox" id="skipE"><span>นำเข้าเฉพาะ ' + p.okCount + ' แถวที่ถูกต้อง</span></label>' : '') +
         '<span class="sp"></span><button class="btn" id="reChk">ตรวจอีกครั้ง</button><button class="btn primary" id="doImp"' + (p.okCount ? '' : ' disabled') + '>ยืนยันนำเข้า</button></div>';
       $('#reChk').onclick = function () { preview().catch(fail); };
+      if ($('#hmSave')) $('#hmSave').onclick = function () {
+        var items = $$('#hmTbl select').map(function (x) { return { name: x.getAttribute('data-name'), wardCode: x.value }; }).filter(function (x) { return x.wardCode; });
+        if (!items.length) { toast('กรุณาเลือกหออย่างน้อย 1 รายการ', 'err'); return; }
+        $('#hmSave').disabled = true;
+        api('saveWardAliases', { items: items }).then(function (r) { toast('จับคู่แล้ว ' + r.saved + ' ชื่อ' + (r.applied ? ' · เติมหอให้บุคลากรเดิม ' + r.applied + ' คน' : '') + ' — กำลังตรวจใหม่'); cacheClear(); return preview(); }).catch(function (e) { $('#hmSave').disabled = false; fail(e); });
+      };
       $('#doImp').onclick = function () {
         var skip = $('#skipE') && $('#skipE').checked;
         if (p.errorCount && !skip) { toast('ยังมีแถวผิดพลาด — แก้ไฟล์ หรือเลือก "นำเข้าเฉพาะแถวที่ถูกต้อง"', 'err'); return; }
@@ -178,6 +185,17 @@ function admAudit(host, q) {
     $$('#auf select, #auf input[type=month]').forEach(function (s) { s.onchange = function () { go('admin', Object.assign({ tab: 'audit' }, formData($('#auf')))); }; });
     $('#auf [name=q]').addEventListener('input', debounce(function () { go('admin', Object.assign({ tab: 'audit' }, formData($('#auf')))); }, 500));
   }).catch(function (e) { host.innerHTML = empty(e.message); });
+}
+/** กล่องจับคู่ชื่อหอใน HR → หอในระบบ (แสดงเมื่อ HR ส่งชื่อหอที่ระบบยังไม่รู้จัก) */
+function hrMapPanel(list) {
+  if (!list.length) return '';
+  var named = list.filter(function (x) { return !x.blank; }), blank = list.filter(function (x) { return x.blank; });
+  return '<section class="card hm"><div class="card-h"><h2>' + ic('layers') + ' จับคู่หอจาก HR</h2><span class="muted small">' + list.reduce(function (s, x) { return s + x.n; }, 0) + ' คนรอจับคู่</span></div>' +
+    '<p class="muted small">ระบบ HR ใช้ชื่อหอไม่ตรงกับรหัสหอในระบบ — เลือกหอให้แต่ละชื่อครั้งเดียว ระบบจำไว้ใช้ทุกครั้ง (แก้ได้ที่ ตั้งค่าระบบ › หอ / ส่วนงาน › ชื่อเรียกอื่น) · ช่องที่เลือกไว้ให้แล้วคือคำแนะนำ โปรดตรวจก่อนบันทึก</p>' +
+    (named.length ? '<div class="tbl-wrap"><table class="tbl compact" id="hmTbl"><thead><tr><th>ชื่อหอในระบบ HR</th><th class="r">คน</th><th>หอในระบบ</th></tr></thead><tbody>' +
+      named.map(function (x) { return '<tr><td>' + esc(x.name) + '</td><td class="r">' + x.n + '</td><td><select class="in" data-name="' + attr(x.name) + '">' + wardOpts(x.suggest || '', '— เลือกหอ —') + '</select>' + (x.suggest ? ' <span class="chip info">แนะนำ</span>' : '') + '</td></tr>'; }).join('') +
+      '</tbody></table></div><div class="row-a"><span class="sp"></span><button class="btn primary" id="hmSave">' + ic('check') + ' บันทึกการจับคู่ แล้วตรวจใหม่</button></div>' : '') +
+    (blank.length ? '<div class="alert warn mt">' + blank[0].n + ' คน ระบบ HR ไม่ระบุหอ (มักเป็น Part Time/จิตอาสา) — ใส่รหัสหอในคอลัมน์ "หอ/หน่วยงาน" ของไฟล์ แล้วเลือกไฟล์ใหม่ หรือเพิ่มรายคนภายหลัง</div>' : '') + '</section>';
 }
 function perfTable() {
   if (!PERF.length) return '<p class="muted">ยังไม่มีข้อมูล</p>';

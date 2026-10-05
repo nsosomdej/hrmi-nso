@@ -209,8 +209,9 @@ function personForm(d) {
           if (r.exists) { msg.innerHTML = '<span class="warn-t">มีบุคลากรรหัสนี้ในทะเบียนแล้ว</span> <a href="#/person/' + c + '">เปิดดู ›</a>'; return; }
           var x = r.row, set = function (n, v) { if (v && f[n]) f[n].value = v; };
           set('title', x.title); set('firstName', x.firstName); set('lastName', x.lastName); set('startDate', x.startDate); set('positionCode', x.positionCode);
-          if (x.wardCode && f.wardCode && $('option[value="' + x.wardCode + '"]', f.wardCode)) f.wardCode.value = x.wardCode;
-          calc(); msg.innerHTML = '<span class="ok-t">✓ ได้ข้อมูลจาก HR</span> · ' + esc(x.hrPosition + ' · ' + x.hrOrgUnit) + (x.wardCode ? '' : ' — <b>โปรดเลือกหอ</b>');
+          var wc = x.wardCode || x.wardSuggest; if (wc && f.wardCode && $('option[value="' + wc + '"]', f.wardCode)) f.wardCode.value = wc;
+          if (x.licenseNo) set('licenseNo', x.licenseNo); if (x.licenseExp) set('licenseExp', x.licenseExp);
+          calc(); msg.innerHTML = '<span class="ok-t">✓ ได้ข้อมูลจาก HR</span> · ' + esc(x.hrPosition + ' · ' + x.hrOrgUnit) + (x.wardCode ? '' : x.wardSuggest ? ' — หอที่เลือกเป็นคำแนะนำ <b>โปรดตรวจ</b>' : ' — <b>โปรดเลือกหอ</b>');
         }).catch(function (e) { hb.disabled = false; msg.innerHTML = '<span class="err-t">' + esc(e.message) + '</span>'; });
       };
     },

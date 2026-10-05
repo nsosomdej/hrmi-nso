@@ -3,7 +3,7 @@
  * เครือข่าย (ไม่มี preflight · จำกัด 4 คำขอ · ลองซ้ำเฉพาะคำสั่งอ่าน) · แคช SWR · ล็อกอินรอบเดียว · เมนู/เส้นทาง · ชิ้นส่วน UI
  * ⚠ BUILD ต้องตรง 3 ที่: Config.gs · javascript.js (APP_BUILD) · version.json
  */
-var APP_BUILD = '2569-10-05.2', APP_BUILD_TH = '5 ต.ค. 2569', APP_VERSION = '1.2569';
+var APP_BUILD = '2569-10-06.1', APP_BUILD_TH = '6 ต.ค. 2569', APP_VERSION = '1.2569';
 var S = { token: null, boot: null, me: null, dv: null, route: null, busy: 0, navId: 0 };
 /** เก็บเวลาตอบสนอง (ดูได้ที่ ตั้งค่าระบบ › ระบบ) */
 var PERF = [];
@@ -227,7 +227,7 @@ function hrLookupDialog(code, onAdded) {
       if (last.exists) { close(); if (onAdded) onAdded(last.row); else go('person/' + last.row.empCode); return; }
       var w = $('#hrw', box) ? $('#hrw', box).value : last.row.wardCode, pc = $('#hrp', box) ? $('#hrp', box).value : last.row.positionCode;
       if (!w) { toast('กรุณาเลือกหอ/หน่วยงาน', 'err'); return; } if (!pc) { toast('กรุณาเลือกตำแหน่ง', 'err'); return; }
-      return api('addFromHr', { empCode: last.row.empCode, wardCode: w, positionCode: pc }).then(function () {
+      return api('addFromHr', { empCode: last.row.empCode, wardCode: w, positionCode: pc, saveAlias: !!($('#hrRem', box) && $('#hrRem', box).checked) }).then(function () {
         close(); cacheClear(); toast('เพิ่ม ' + last.row.fullName + ' เข้าทะเบียนแล้ว');
         var pos = (S.boot.positions.filter(function (q) { return q.code === pc; })[0] || {}).name || '';
         if (onAdded) onAdded({ empCode: last.row.empCode, fullName: last.row.fullName, wardCode: w, positionName: pos }); else go('person/' + last.row.empCode);
@@ -239,7 +239,8 @@ function hrLookupDialog(code, onAdded) {
     api('lookupHr', { code: c }, { keep: true }).then(function (r) {
       last = r; var x = r.row || {};
       $('#hrr', box).innerHTML = hrCardHtml(r) + (r.ok && !r.exists ? '<div class="form-grid mt">' +
-        (!x.wardCode || !x.canAdd ? '<label class="fld"><span>หอ/หน่วยงาน *</span><select id="hrw">' + wardOpts(x.wardCode || '', 'เลือกหอ/หน่วย', S.boot.editWards) + '</select></label>' : '') +
+        (!x.wardCode || !x.canAdd ? '<label class="fld"><span>หอ/หน่วยงาน *' + (x.wardSuggest ? ' <span class="chip info">แนะนำ ' + esc(x.wardSuggest) + '</span>' : '') + '</span><select id="hrw">' + wardOpts(x.wardCode || x.wardSuggest || '', 'เลือกหอ/หน่วย', S.boot.editWards) + '</select></label>' +
+          (!x.wardCode && x.hrOrgUnit && can('office') ? '<label class="tog full"><input type="checkbox" id="hrRem" checked><span>จำว่า "' + esc(x.hrOrgUnit) + '" ในระบบ HR = หอที่เลือก</span></label>' : '') : '') +
         (!x.positionCode ? '<label class="fld"><span>ตำแหน่ง *</span><select id="hrp">' + posOpts('', 'เลือกตำแหน่ง') + '</select></label>' : '') + '</div>' : '');
     }).catch(function (e) { last = null; $('#hrr', box).innerHTML = '<div class="alert err">' + esc(e.message) + '</div>'; });
   };

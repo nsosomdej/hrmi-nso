@@ -350,3 +350,4 @@ body.is-login{background:radial-gradient(1200px 600px at 10% -10%,#DBEAFE 0%,tra
 .kpi.alert .kpi-ic{background:var(--star-soft)}.kpi.warn .kpi-ic{background:var(--warn-soft)}
 .pp-item.hr{display:flex;gap:8px;align-items:center;color:var(--blue);background:var(--blue-soft)}
 .kpi-ic~.kpi-l{padding-right:44px}
+.hm{margin:12px 0;border:1px solid #FDE3B5;background:#FFFCF5}.hm select.in{min-width:240px}
